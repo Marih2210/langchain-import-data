@@ -1,12 +1,10 @@
 import os
-import requests
 import pandas as pd
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
-from langchain_community.vectorstores import FAISS
+from langchain_chroma import Chroma
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough
 from langchain.schema.output_parser import StrOutputParser
@@ -15,24 +13,16 @@ from langchain.schema.output_parser import StrOutputParser
 load_dotenv()
 os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
-# Baixar e salvar o arquivo CSV
-url = "https://raw.githubusercontent.com/americanas-tech/b2w-reviews01/4639429ec698d7821fc99a0bc665fa213d9fcd5a/B2W-Reviews01.csv"
-response = requests.get(url)
-rawdata = response.text
-
-with open("B2W-Reviews01.csv", "w", encoding='utf-8') as f:
-    f.write(rawdata)
-
-# Ler o arquivo CSV
-data = pd.read_csv("B2W-Reviews01.csv", low_memory=False)
+# Ler o arquivo JSON
+data = pd.read_json("dados_dataset.json")
 
 # Remover duplicatas
 data = data.drop_duplicates(subset=['product_name'])
 
-# Setar na para Informação não Disponível 
+# Setar valores ausentes para 'Informação não disponível'
 data = data.fillna("Informação não disponível")
 
-# Formatação de chunck/docs e limitação de quantos chuncks retornar
+# Função de formatação para os dados do review
 def format_review(row):
     return (
         f"Data de Submissão: {row.get('submission_date', 'Não disponível')}\n"
@@ -51,13 +41,20 @@ def format_review(row):
         f"Estado do Revisor: {row.get('reviewer_state', 'Não disponível')}\n"
     )
 
-documents = [Document(page_content=format_review(row)) for _, row in data.head(15).iterrows()]
+# Gerar documentos com base nas 1000 primeiras linhas do dataset
+documents = [Document(page_content=format_review(row)) for _, row in data.head(10).iterrows()]
+
+# Imprimir documentos para depuração
+print("Documentos gerados:")
+for doc in documents:
+    print(doc.page_content)
+    print('-' * 80)
 
 # Dividir os documentos em chunks
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 text_chunks = text_splitter.split_documents(documents)
 
-# Remover duplicatas dos chunks
+# Imprimir chunks para depuração
 unique_chunks = []
 seen_texts = set()
 for chunk in text_chunks:
@@ -65,12 +62,20 @@ for chunk in text_chunks:
         seen_texts.add(chunk.page_content)
         unique_chunks.append(chunk)
 
-# Criar embeddings e vetorstore, configurar vectorstore para limitação com chunck
+# Criar embeddings e vetorstore
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-vectorstore = FAISS.from_documents(unique_chunks, embeddings)
+vectorstore = Chroma(
+    collection_name="example_collection",
+    embedding_function=embeddings,
+    persist_directory="./chroma_langchain_db", 
+)
+
+# Adicionar documentos ao Chroma
+vectorstore.add_documents(documents)  
+
+# Teste a recuperação
 retriever = vectorstore.as_retriever(search_kwargs={"k": len(unique_chunks)})
 
-# Imprimir chunks após remover duplicatas
 print("Chunks após remover duplicatas:")
 for chunk in unique_chunks:
     print(chunk.page_content)
@@ -115,8 +120,19 @@ rag_chain = (
     | output_parser
 )
 
-# Receber e processar a pergunta do usuário
-user_question = input("Digite sua Pergunta: ")
-print("Pergunta recebida:", user_question)
-responseQuestion = rag_chain.invoke(user_question)
-print("Resposta gerada:", responseQuestion)
+# Loop para receber e processar perguntas do usuário
+while True:
+    user_question = input("Digite sua Pergunta (ou 'Sair' para encerrar): ")
+    
+    # Verificar se o usuário deseja sair
+    if user_question.strip().lower() == 'sair':
+        print("Saindo do programa.")
+        break
+
+    print("Pergunta recebida:", user_question)
+    try:
+        responseQuestion = rag_chain.invoke(user_question)
+        print("Resposta gerada:", responseQuestion)
+    except Exception as e:
+        print(f"Erro ao processar a pergunta: {e}")
+    print('-' * 80)

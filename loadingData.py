@@ -1,17 +1,18 @@
 import os
+from langchain_google_genai import ChatGoogleGenerativeAI
 import pandas as pd
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
-from langchain_chroma import Chroma
+from langchain.vectorstores import FAISS
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough
 from langchain.schema.output_parser import StrOutputParser
+from langchain.chains import RetrievalQA
 
 # Carregar variáveis de ambiente
 load_dotenv()
-os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
 # Ler o arquivo JSON
 data = pd.read_json("dados_dataset.json")
@@ -41,20 +42,14 @@ def format_review(row):
         f"Estado do Revisor: {row.get('reviewer_state', 'Não disponível')}\n"
     )
 
-# Gerar documentos com base nas 1000 primeiras linhas do dataset
-documents = [Document(page_content=format_review(row)) for _, row in data.head(10).iterrows()]
-
-# Imprimir documentos para depuração
-print("Documentos gerados:")
-for doc in documents:
-    print(doc.page_content)
-    print('-' * 80)
+# Gerar documentos
+documents = [Document(page_content=format_review(row)) for _, row in data.head(1000).iterrows()]
 
 # Dividir os documentos em chunks
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 text_chunks = text_splitter.split_documents(documents)
 
-# Imprimir chunks para depuração
+# Remover duplicatas dos chunks
 unique_chunks = []
 seen_texts = set()
 for chunk in text_chunks:
@@ -62,25 +57,12 @@ for chunk in text_chunks:
         seen_texts.add(chunk.page_content)
         unique_chunks.append(chunk)
 
-# Criar embeddings e vetorstore
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-vectorstore = Chroma(
-    collection_name="example_collection",
-    embedding_function=embeddings,
-    persist_directory="./chroma_langchain_db", 
-)
+# Criar embeddings e vetorstore usando Hugging Face embeddings (mais escalável)
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+vectorstore = FAISS.from_documents(unique_chunks, embeddings)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 15})
 
-# Adicionar documentos ao Chroma
-vectorstore.add_documents(documents)  
-
-# Teste a recuperação
-retriever = vectorstore.as_retriever(search_kwargs={"k": len(unique_chunks)})
-
-print("Chunks após remover duplicatas:")
-for chunk in unique_chunks:
-    print(chunk.page_content)
-    print('-' * 80)
-
+# Exibir chunks após remover duplicatas
 print(f"Total de chunks criados: {len(text_chunks)}")
 print(f"Total de chunks únicos: {len(unique_chunks)}")
 
@@ -120,19 +102,8 @@ rag_chain = (
     | output_parser
 )
 
-# Loop para receber e processar perguntas do usuário
-while True:
-    user_question = input("Digite sua Pergunta (ou 'Sair' para encerrar): ")
-    
-    # Verificar se o usuário deseja sair
-    if user_question.strip().lower() == 'sair':
-        print("Saindo do programa.")
-        break
-
-    print("Pergunta recebida:", user_question)
-    try:
-        responseQuestion = rag_chain.invoke(user_question)
-        print("Resposta gerada:", responseQuestion)
-    except Exception as e:
-        print(f"Erro ao processar a pergunta: {e}")
-    print('-' * 80)
+# Receber e processar a pergunta do usuário
+user_question = input("Digite sua Pergunta: ")
+print("Pergunta recebida:", user_question)
+responseQuestion = rag_chain.invoke(user_question)
+print("Resposta gerada:", responseQuestion)

@@ -2,28 +2,20 @@ import os
 from langchain_google_genai import ChatGoogleGenerativeAI
 import pandas as pd
 from dotenv import load_dotenv
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain.vectorstores import FAISS
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough
 from langchain.schema.output_parser import StrOutputParser
-from langchain.chains import RetrievalQA
 
-# Carregar variáveis de ambiente
 load_dotenv()
 
-# Ler o arquivo JSON
 data = pd.read_json("dados_dataset.json")
 
-# Remover duplicatas
-data = data.drop_duplicates(subset=['product_name'])
-
-# Setar valores ausentes para 'Informação não disponível'
 data = data.fillna("Informação não disponível")
 
-# Função de formatação para os dados do review
 def format_review(row):
     return (
         f"Data de Submissão: {row.get('submission_date', 'Não disponível')}\n"
@@ -42,14 +34,11 @@ def format_review(row):
         f"Estado do Revisor: {row.get('reviewer_state', 'Não disponível')}\n"
     )
 
-# Gerar documentos
-documents = [Document(page_content=format_review(row)) for _, row in data.head(1000).iterrows()]
+documents = [Document(page_content=format_review(row)) for _, row in data.head(10000).iterrows()]
 
-# Dividir os documentos em chunks
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 text_chunks = text_splitter.split_documents(documents)
 
-# Remover duplicatas dos chunks
 unique_chunks = []
 seen_texts = set()
 for chunk in text_chunks:
@@ -57,16 +46,13 @@ for chunk in text_chunks:
         seen_texts.add(chunk.page_content)
         unique_chunks.append(chunk)
 
-# Criar embeddings e vetorstore usando Hugging Face embeddings (mais escalável)
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 vectorstore = FAISS.from_documents(unique_chunks, embeddings)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 15})
+retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-# Exibir chunks após remover duplicatas
 print(f"Total de chunks criados: {len(text_chunks)}")
 print(f"Total de chunks únicos: {len(unique_chunks)}")
 
-# Definir template e prompt
 template = """Você é um assistente treinado para responder perguntas com base nas seguintes informações:
 - Data de Submissão
 - ID do Revisor
@@ -82,6 +68,7 @@ template = """Você é um assistente treinado para responder perguntas com base 
 - Ano de Nascimento do Revisor
 - Gênero do Revisor
 - Estado do Revisor
+- Recomendaria para compra, para outros clientes
 
 Use os pedaços de texto retornados como base para suas respostas. Se a informação não estiver disponível ou não souber a resposta, diga "Não é Possível Retornar esse Dado".
 
@@ -93,7 +80,6 @@ Resposta:
 prompt = PromptTemplate.from_template(template)
 output_parser = StrOutputParser()
 
-# Inicializar modelo e cadeia de processamento
 llm_model = ChatGoogleGenerativeAI(model='gemini-pro', temperature=0.2)
 rag_chain = (
     {"context": retriever, "question": RunnablePassthrough()}
@@ -102,8 +88,16 @@ rag_chain = (
     | output_parser
 )
 
-# Receber e processar a pergunta do usuário
-user_question = input("Digite sua Pergunta: ")
-print("Pergunta recebida:", user_question)
-responseQuestion = rag_chain.invoke(user_question)
-print("Resposta gerada:", responseQuestion)
+while True:
+    user_question = input("Digite sua Pergunta (ou 'SAIR' para encerrar): ")
+
+    if user_question.strip().upper() == "SAIR":
+        print("Encerrando o programa.")
+        break
+
+    print("Pergunta recebida:", user_question)
+    
+    responseQuestion = rag_chain.invoke(user_question)
+    
+    print("Resposta gerada:", responseQuestion)
+

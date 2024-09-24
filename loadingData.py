@@ -11,9 +11,9 @@ from langchain.schema.runnable import RunnablePassthrough
 from langchain.schema.output_parser import StrOutputParser
 
 load_dotenv()
+os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
 data = pd.read_json("dados_dataset.json")
-
 data = data.fillna("Informação não disponível")
 
 def format_review(row):
@@ -34,9 +34,9 @@ def format_review(row):
         f"Estado do Revisor: {row.get('reviewer_state', 'Não disponível')}\n"
     )
 
-documents = [Document(page_content=format_review(row)) for _, row in data.head(10000).iterrows()]
+documents = [Document(page_content=format_review(row)) for _, row in data.head(500).iterrows()]
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 text_chunks = text_splitter.split_documents(documents)
 
 unique_chunks = []
@@ -48,7 +48,7 @@ for chunk in text_chunks:
 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 vectorstore = FAISS.from_documents(unique_chunks, embeddings)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 
 print(f"Total de chunks criados: {len(text_chunks)}")
 print(f"Total de chunks únicos: {len(unique_chunks)}")
@@ -68,19 +68,22 @@ template = """Você é um assistente treinado para responder perguntas com base 
 - Ano de Nascimento do Revisor
 - Gênero do Revisor
 - Estado do Revisor
-- Recomendaria para compra, para outros clientes
-
-Use os pedaços de texto retornados como base para suas respostas. Se a informação não estiver disponível ou não souber a resposta, diga "Não é Possível Retornar esse Dado".
 
 Pergunta: {question}
 Contexto: {context}
-Resposta:
+
+Foque na questão sentimental analisando as reviews e gere repostas que façam sentido ao usuário
+Retorne também pergunta especificas se for referente à apenas 1 produto.
+Use as informações dos reviews fornecidos acima. Se não houver informações disponíveis, diga "Não é possível retornar esse dado".
+Se for perguntado sobre o melhor produto, recomendação ou review, baseie sua resposta nas avaliações gerais mais alta e gere contextos de acordo com esse requisito do usuário, use cada um dos dados listados e se baseie para gerar uma reposta concisa.
+Com base nas categorias, filtre os produtos semelhantes por elas e caso o usuário pergunte no plural retorne para ele na quantidade adequada ou uma adequada, se ele perguntar no singular, responda apenas no singular com base nas análises desses subconjuntos de produtos similares.
 """
 
 prompt = PromptTemplate.from_template(template)
 output_parser = StrOutputParser()
 
 llm_model = ChatGoogleGenerativeAI(model='gemini-pro', temperature=0.2)
+
 rag_chain = (
     {"context": retriever, "question": RunnablePassthrough()}
     | prompt
@@ -89,15 +92,14 @@ rag_chain = (
 )
 
 while True:
-    user_question = input("Digite sua Pergunta (ou 'SAIR' para encerrar): ")
+    user_question = input("Digite sua Pergunta (ou 'SAIR' para encerrar): ").strip()
 
-    if user_question.strip().upper() == "SAIR":
+    if user_question.upper() == "SAIR":
         print("Encerrando o programa.")
         break
 
-    print("Pergunta recebida:", user_question)
+    print(f"Pergunta recebida: {user_question}")
     
-    responseQuestion = rag_chain.invoke(user_question)
+    response_question = rag_chain.invoke(user_question)
     
-    print("Resposta gerada:", responseQuestion)
-
+    print(f"Resposta gerada: {response_question}")
